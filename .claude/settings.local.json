@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python call_center_simulation.py:*)",
+      "Bash(cat:*)",
+      "Bash(python:*)"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}
