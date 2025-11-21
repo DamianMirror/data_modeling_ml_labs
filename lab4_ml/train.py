@@ -6,10 +6,37 @@ import math
 import os
 from collections import defaultdict
 
+# --- ВИЗНАЧЕННЯ ДІЙ ДЛЯ CONTINUOUS РЕЖИМУ ---
+# Ключ: ID дії (для Q-Table)
+# Значення: [Steering (-1..1), Gas (0..1), Brake (0..1)]
+CONTINUOUS_ACTIONS = {
+    0: [0.0, 0.0, 0.0],  # Idle
+    1: [0.0, 1.0, 0.0],  # Full Gas (Straight)
+    2: [0.0, 0.0, 0.8],  # Brake
+    3: [-1.0, 0.0, 0.0],  # Hard Left (No Gas)
+    4: [1.0, 0.0, 0.0],  # Hard Right (No Gas)
+    5: [-0.5, 0.5, 0.0],  # Soft Left + Gas (Drift)
+    6: [0.5, 0.5, 0.0],  # Soft Right + Gas (Drift)
+    7: [-1.0, 1.0, 0.0],  # Hard Left + Gas
+    8: [1.0, 1.0, 0.0]  # Hard Right + Gas
+}
+
+ACTION_NAMES = {
+    0: "Idle",
+    1: "Gas",
+    2: "Brake",
+    3: "Hard Left",
+    4: "Hard Right",
+    5: "Left+Gas",
+    6: "Right+Gas",
+    7: "Hard L+Gas",
+    8: "Hard R+Gas"
+}
+
 
 class QLearningAgent:
     def __init__(self, action_space_size, learning_rate=0.1, discount_factor=0.99,
-                 epsilon=1.0, epsilon_decay=0.9, epsilon_min=0.01):
+                 epsilon=1.0, epsilon_decay=0.95, epsilon_min=0.01):
         self.q_table = defaultdict(lambda: np.zeros(action_space_size))
         self.lr = learning_rate
         self.gamma = discount_factor
@@ -18,22 +45,19 @@ class QLearningAgent:
         self.epsilon_min = epsilon_min
         self.action_space_size = action_space_size
 
-        # --- НАЛАШТУВАННЯ ПРОМЕНІВ (LIDAR - 4 PROBES) ---
-        # 4 промені: [Side Left, Front Left, Front Right, Side Right]
+        # --- НАЛАШТУВАННЯ ПРОМЕНІВ ---
         self.ray_angles = [-0.6, -0.2, 0.2, 0.6]
-        self.ray_length = 40  # Дальність огляду в пікселях
+        self.ray_length = 40
         self.start_x = 48
         self.start_y = 66
 
-        # --- НАЛАШТУВАННЯ ДАТЧИКА ШВИДКОСТІ (ROI) ---
-        # Повернули ваші параметри
+        # --- ДАТЧИК ШВИДКОСТІ ---
         self.speed_roi_x = 12
         self.speed_roi_y = 88
         self.speed_roi_w = 3
         self.speed_roi_h = 6
 
     def cast_rays(self, observation):
-        """Пускає промені і повертає точні відстані."""
         if len(observation.shape) == 3:
             gray = np.mean(observation, axis=2)
         else:
@@ -56,7 +80,7 @@ class QLearningAgent:
                 if not (0 <= int(current_x) < 96 and 0 <= int(current_y) < 96):
                     break
                 pixel_val = gray[int(current_y), int(current_x)]
-                if pixel_val > 115:  # Трава
+                if pixel_val > 115:
                     break
                 dist += 1
                 final_x, final_y = current_x, current_y
@@ -67,9 +91,6 @@ class QLearningAgent:
         return distances, endpoints
 
     def _get_visual_speed(self, observation):
-        """
-        Старий метод: рахуємо середню яскравість у зоні ROI.
-        """
         x = self.speed_roi_x
         y = self.speed_roi_y
         w = self.speed_roi_w
@@ -78,63 +99,54 @@ class QLearningAgent:
         avg_brightness = np.mean(roi)
         return avg_brightness
 
-    def discretize_state(self, observation, steering_angle):
-        """
-        Перетворює стан у дискретний кортеж.
-        Швидкість береться ВІЗУАЛЬНО, Кермо - з фізики.
-        """
+    def discretize_state(self, observation):
         raw_distances, _ = self.cast_rays(observation)
         discrete_state = []
 
-        # 1. Lidar (4 промені)
+        # --- Lidar: 6 рівнів (0, 1, 2, 3, 4, 5) ---
         for i, d in enumerate(raw_distances):
             is_side_sensor = (i == 0 or i == 3)
-
             if is_side_sensor:
-                # БОКОВІ ЛІДАРИ
+                # БОКОВІ
                 if d <= 2:
-                    discrete_state.append(0)
-                elif d <= 6:
-                    discrete_state.append(1)
-                elif d <= 12:
-                    discrete_state.append(2)
-                elif d <= 16:
-                    discrete_state.append(3)
-                else:
-                    discrete_state.append(4)
-            else:
-                # ПЕРЕДНІ ЛІДАРИ
-                if d <= 3:
-                    discrete_state.append(0)
+                    discrete_state.append(0)  # Crash / Touch
+                elif d <= 5:
+                    discrete_state.append(1)  # Critical
                 elif d <= 8:
-                    discrete_state.append(1)
-                elif d <= 15:
-                    discrete_state.append(2)
-                elif d <= 30:
-                    discrete_state.append(3)
+                    discrete_state.append(2)  # Very Close
+                elif d <= 12:
+                    discrete_state.append(3)  # Close
+                elif d <= 16:
+                    discrete_state.append(4)  # Near
                 else:
-                    discrete_state.append(4)
+                    discrete_state.append(5)  # Safe
+            else:
+                # ПЕРЕДНІ
+                if d <= 3:
+                    discrete_state.append(0)  # Crash
+                elif d <= 8:
+                    discrete_state.append(1)  # Critical
+                elif d <= 15:
+                    discrete_state.append(2)  # Close
+                elif d <= 22:
+                    discrete_state.append(3)  # Medium
+                elif d <= 30:
+                    discrete_state.append(4)  # Far
+                else:
+                    discrete_state.append(5)  # Safe
 
-        # 2. Speed (VISUAL)
+        # --- Speed (Visual) ---
         brightness = self._get_visual_speed(observation)
         speed_state = 0
         if brightness < 40:
-            speed_state = 0  # Slow
+            speed_state = 0
         elif brightness < 60:
-            speed_state = 1  # Normal
+            speed_state = 1
         else:
-            speed_state = 2  # Fast
+            speed_state = 2
         discrete_state.append(speed_state)
 
-        # 3. Steering (PHYSICS)
-        steering_state = 1  # Straight
-        if steering_angle < -0.1:
-            steering_state = 0  # Left
-        elif steering_angle > 0.1:
-            steering_state = 2  # Right
-
-        discrete_state.append(steering_state)
-
+        # Повертаємо стан (без steering) і яскравість для HUD
         return tuple(discrete_state), brightness
 
     def choose_action(self, state):
@@ -171,6 +183,13 @@ class QLearningAgent:
 
         with open(filename, 'rb') as f:
             data = pickle.load(f)
+            loaded_q = data['q_table']
+            sample_key = next(iter(loaded_q)) if loaded_q else None
+
+            if sample_key and len(loaded_q[sample_key]) != self.action_space_size:
+                print(f"УВАГА: Розмір дій у файлі ({len(loaded_q[sample_key])}) не співпадає. Починаємо з нуля.")
+                return False
+
             self.q_table = defaultdict(lambda: np.zeros(self.action_space_size), data['q_table'])
 
             if epsilon is not None:
@@ -181,7 +200,7 @@ class QLearningAgent:
 
             self.lr = data.get('lr', 0.1)
             self.gamma = data.get('gamma', 0.99)
-        print(f"Успішно завантажено модель з '{filename}'. Продовжуємо навчання з Epsilon: {self.epsilon:.3f}")
+        print(f"Успішно завантажено модель з '{filename}'. Epsilon: {self.epsilon:.3f}")
         return True
 
 
@@ -193,10 +212,10 @@ def train_q_learning_opencv(episodes=500,
     env = gym.make("CarRacing-v3", render_mode="rgb_array",
                    lap_complete_percent=0.95,
                    domain_randomize=False,
-                   continuous=False,
+                   continuous=True,
                    max_episode_steps=max_steps)
 
-    agent = QLearningAgent(action_space_size=5)
+    agent = QLearningAgent(action_space_size=len(CONTINUOUS_ACTIONS))
 
     if load_path:
         agent.load(load_path, epsilon=start_epsilon)
@@ -208,104 +227,102 @@ def train_q_learning_opencv(episodes=500,
     SCALE_X = WINDOW_WIDTH / 96
     SCALE_Y = WINDOW_HEIGHT / 96
 
-    cv2.namedWindow('Car Racing Lidar', cv2.WINDOW_NORMAL)
-    cv2.resizeWindow('Car Racing Lidar', WINDOW_WIDTH, WINDOW_HEIGHT)
+    cv2.namedWindow('Car Racing Continuous', cv2.WINDOW_NORMAL)
+    cv2.resizeWindow('Car Racing Continuous', WINDOW_WIDTH, WINDOW_HEIGHT)
 
     episode_rewards = []
 
     for episode in range(episodes):
         observation, info = env.reset(seed=42)
 
-        # Отримуємо кермо для початкового стану
-        try:
-            steering_angle = env.unwrapped.car.wheels[0].joint.angle
-        except AttributeError:
-            steering_angle = env.unwrapped.car.wheels[0].joints[0].joint.angle
-
-        state, brightness_val = agent.discretize_state(observation, steering_angle)
+        state, brightness_val = agent.discretize_state(observation)
 
         total_reward = 0
         manual_reset = False
 
         for step in range(max_steps):
-            action = agent.choose_action(state)
-            next_observation, reward, terminated, truncated, info = env.step(action)
+            # --- ПРОПУСК ПЕРШИХ 40 КРОКІВ ---
+            if step < 40:
+                next_observation, _, terminated, truncated, _ = env.step(
+                    np.array(CONTINUOUS_ACTIONS[0], dtype=np.float32))
+                state, brightness_val = agent.discretize_state(next_observation)
+                if terminated or truncated: break
+                continue
+            # --------------------------------
 
-            # --- Отримання керма ---
-            try:
-                next_steering_angle = env.unwrapped.car.wheels[0].joint.angle
-            except AttributeError:
-                next_steering_angle = env.unwrapped.car.wheels[0].joints[0].joint.angle
+            action_idx = agent.choose_action(state)
+            continuous_action = CONTINUOUS_ACTIONS[action_idx]
 
-            # discretize_state сама порахує швидкість з картинки
-            next_state, next_brightness_val = agent.discretize_state(next_observation, next_steering_angle)
+            next_observation, reward, terminated, truncated, info = env.step(
+                np.array(continuous_action, dtype=np.float32))
+
+            next_state, next_brightness_val = agent.discretize_state(next_observation)
 
             # --- Reward Shaping ---
             if reward < 0:
                 reward -= 1
             else:
-                reward += 10
+                reward += 15
 
-            if action == 3:
-                reward += 2  # Газ
-            elif action == 0:
-                reward -= 0.5
-            elif action == 4:
-                reward -= 0.5
+            # Розпаковка стану: 4 лідари + швидкість
+            d1, d2, d3, d4, speed_class = state
 
-            d1, d2, d3, d4, speed_class, steer_class = state
+            #speed
+            if action_idx == 1:
+                reward += 0.5
 
-            # Логіка швидкості (тепер спирається на Visual Speed)
-            if speed_class == 0 or speed_class == 2:
-                reward -= 5
-            elif speed_class == 1:
-                reward += 2
+            if d2 >= 5 and d3 >= 5:
+                if speed_class == 0: reward -= 2
+                else: reward += 2
+            elif d2 <= 4 and d3 <= 4:
+                if speed_class >= 2: reward -= 2
 
-            if d1 <= 2 and action == 1:
-                reward += 2
-            elif d4 <= 2 and action == 2:
-                reward += 2
 
-            if abs(d1 - d4) >= 1: reward -= 3
-            if abs(d2 - d3) >= 1: reward -= 1
 
-            if d2 >= 4 and d3 >= 4:
-                if speed_class == 2: reward += 2
+            if d1 <= 3 and (action_idx == 4 or action_idx == 6): reward += 2
+            if d4 <= 3 and (action_idx == 3 or action_idx == 5): reward += 2
+
+            # if abs(d1 - d4) >= 2: reward -= 3
+
+
+
+            # if d1 <= 1 and d2 <= 2 and d4 <= 2 and d4 >= 3 and action_idx == 8:
+            #     reward += 5
+            # elif d1 >= 3 and d2 <= 2 and d4 <= 2 and d4 <= 1 and action_idx == 7:
+            #     reward += 5
 
             if d1 <= 1 or d2 <= 1 or d3 <= 1 or d4 <= 1: reward -= 5
-
             if d1 == 0 or d2 == 0 or d3 == 0 or d4 == 0: reward -= 20
-
             if d1 == 0 and d2 == 0 and d3 == 0 and d4 == 0:
                 reward -= 50
-                agent.update(state, action, reward, next_state, True)
+                agent.update(state, action_idx, reward, next_state, True)
                 break
 
-            agent.update(state, action, reward, next_state, terminated or truncated)
+            agent.update(state, action_idx, reward, next_state, terminated or truncated)
 
             # --- ВІЗУАЛІЗАЦІЯ ---
             frame_render = env.render()
             frame_display = cv2.resize(frame_render, (WINDOW_WIDTH, WINDOW_HEIGHT), interpolation=cv2.INTER_NEAREST)
             frame_display = cv2.cvtColor(frame_display, cv2.COLOR_RGB2BGR)
 
-            # Лідар
             raw_dists, endpoints = agent.cast_rays(next_observation)
             start_x = int(agent.start_x * SCALE_X)
             start_y = int(agent.start_y * SCALE_Y)
 
             for i, (end_x, end_y) in enumerate(endpoints):
                 dist_class = state[i]
-
-                if dist_class == 4:
+                if dist_class == 5:
                     color = (0, 255, 0)
+                elif dist_class == 4:
+                    color = (0, 255, 127)
                 elif dist_class == 3:
-                    color = (0, 255, 128)
-                elif dist_class == 2:
                     color = (0, 255, 255)
-                elif dist_class == 1:
+                elif dist_class == 2:
                     color = (0, 128, 255)
-                else:
+                elif dist_class == 1:
                     color = (0, 0, 255)
+                else:
+                    color = (0, 0, 128)
 
                 ex, ey = int(end_x * SCALE_X), int(end_y * SCALE_Y)
                 cv2.line(frame_display, (start_x, start_y), (ex, ey), color, 3)
@@ -313,7 +330,6 @@ def train_q_learning_opencv(episodes=500,
                 cv2.putText(frame_display, f"{raw_dists[i]}", (ex, ey - 15), cv2.FONT_HERSHEY_SIMPLEX, 0.6,
                             (255, 255, 255), 2)
 
-            # HUD
             hud_y = 30
 
             def draw_text(text, col=(255, 255, 255)):
@@ -323,35 +339,23 @@ def train_q_learning_opencv(episodes=500,
                 hud_y += 35
 
             speed_labels = ['Slow', 'Normal', 'Fast']
-            steer_labels = ['Left', 'Straight', 'Right']
             speed_col = (0, 255, 0) if speed_class == 1 else ((0, 255, 255) if speed_class == 0 else (0, 0, 255))
+            action_name = ACTION_NAMES[action_idx]
 
             draw_text(f'Episode: {episode}/{episodes}')
-            draw_text(f'Step: {step}/{max_steps}')
-            draw_text(f'Action: {action}', (0, 255, 0))
-
-            # Показуємо візуальну яскравість
+            draw_text(f'Action: {action_name} ({action_idx})', (0, 255, 0))
             draw_text(f'Brightness: {brightness_val:.1f} ({speed_labels[speed_class]})', speed_col)
-
-            st_col = (0, 255, 255) if steer_class == 1 else (0, 100, 255)
-            draw_text(f'Steering: {steering_angle:.2f} ({steer_labels[steer_class]})', st_col)
-
             draw_text(f'Reward: {total_reward:.1f}')
             draw_text(f'Epsilon: {agent.epsilon:.3f}')
-            draw_text(f'Lidar: {d1}-{d2}-{d3}-{d4}')
+            draw_text(f'State: {d1}, {d2}, {d3}, {d4}')
 
-            # ROI Rectangle (Відображаємо зону пошуку швидкості)
             roi_x1 = int(agent.speed_roi_x * SCALE_X)
             roi_y1 = int(agent.speed_roi_y * SCALE_Y)
             roi_x2 = int((agent.speed_roi_x + agent.speed_roi_w) * SCALE_X)
             roi_y2 = int((agent.speed_roi_y + agent.speed_roi_h) * SCALE_Y)
             cv2.rectangle(frame_display, (roi_x1, roi_y1), (roi_x2, roi_y2), (255, 0, 255), 2)
 
-            # Інструкція
-            cv2.putText(frame_display, "Press 'R' to reset", (WINDOW_WIDTH - 300, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7,
-                        (0, 165, 255), 2)
-
-            cv2.imshow('Car Racing Lidar', frame_display)
+            cv2.imshow('Car Racing Continuous', frame_display)
 
             key = cv2.waitKey(1) & 0xFF
             if key == 27:
@@ -387,14 +391,15 @@ def train_q_learning_opencv(episodes=500,
 
 
 if __name__ == "__main__":
-    model_file = "q_learning_car_racing_4_lidar_steer.pkl"
-    save_file = "q_learning_car_racing_4_lidar_steer.pkl"
+    # Нова назва файлу: "no_steer"
+    model_file = "q_learning_car_racing_continuous_no_steer.pkl"
+    save_file = "q_learning_car_racing_continuous_no_steer.pkl"
 
-    print("--- CAR RACING Q-LEARNING (VISUAL SPEED + STEER) ---")
+    print("--- CAR RACING Q-LEARNING (CONTINUOUS + NO STEERING STATE) ---")
     if os.path.exists(model_file):
         print(f"Знайдено {model_file}, продовжуємо...")
-        train_q_learning_opencv(episodes=500, max_steps=500, load_path=model_file, save_path=save_file,
+        train_q_learning_opencv(episodes=500, max_steps=1000, load_path=model_file, save_path=save_file,
                                 start_epsilon=0.01)
     else:
-        print("Починаємо з нуля...")
+        print("Починаємо з нуля (нова continuous модель)...")
         train_q_learning_opencv(episodes=500, max_steps=3000, save_path=save_file)
