@@ -6,31 +6,23 @@ import math
 import os
 from collections import defaultdict
 
-# --- ВИЗНАЧЕННЯ ДІЙ ДЛЯ CONTINUOUS РЕЖИМУ ---
+# --- ВИЗНАЧЕННЯ ДІЙ ДЛЯ CONTINUOUS РЕЖИМУ (Тільки 5 дій) ---
 # Ключ: ID дії (для Q-Table)
 # Значення: [Steering (-1..1), Gas (0..1), Brake (0..1)]
 CONTINUOUS_ACTIONS = {
     0: [0.0, 0.0, 0.0],  # Idle
     1: [0.0, 1.0, 0.0],  # Full Gas (Straight)
     2: [0.0, 0.0, 0.8],  # Brake
-    3: [-1.0, 0.0, 0.0],  # Hard Left (No Gas)
-    4: [1.0, 0.0, 0.0],  # Hard Right (No Gas)
-    5: [-0.5, 0.5, 0.0],  # Soft Left + Gas (Drift)
-    6: [0.5, 0.5, 0.0],  # Soft Right + Gas (Drift)
-    7: [-1.0, 1.0, 0.0],  # Hard Left + Gas
-    8: [1.0, 1.0, 0.0]  # Hard Right + Gas
+    3: [-0.5, 0.35, 0.0],  # Soft Left + Gas (Drift)
+    4: [0.5, 0.35, 0.0],  # Soft Right + Gas (Drift)
 }
 
 ACTION_NAMES = {
     0: "Idle",
     1: "Gas",
     2: "Brake",
-    3: "Hard Left",
-    4: "Hard Right",
-    5: "Left+Gas",
-    6: "Right+Gas",
-    7: "Hard L+Gas",
-    8: "Hard R+Gas"
+    3: "Left+Gas",
+    4: "Right+Gas",
 }
 
 
@@ -45,13 +37,14 @@ class QLearningAgent:
         self.epsilon_min = epsilon_min
         self.action_space_size = action_space_size
 
-        # --- НАЛАШТУВАННЯ ПРОМЕНІВ ---
-        self.ray_angles = [-0.6, -0.2, 0.2, 0.6]
-        self.ray_length = 40
+        # --- НАЛАШТУВАННЯ ПРОМЕНІВ (5 штук) ---
+        # 0: Far Left, 1: Left, 2: Center, 3: Right, 4: Far Right
+        self.ray_angles = [-0.9, -0.4, 0.0, 0.4, 0.9]
+        self.ray_length = 35
         self.start_x = 48
         self.start_y = 66
 
-        # --- ДАТЧИК ШВИДКОСТІ ---
+        # --- ДАТЧИК ШВИДКОСТІ (ROI) ---
         self.speed_roi_x = 12
         self.speed_roi_y = 88
         self.speed_roi_w = 3
@@ -103,50 +96,34 @@ class QLearningAgent:
         raw_distances, _ = self.cast_rays(observation)
         discrete_state = []
 
-        # --- Lidar: 6 рівнів (0, 1, 2, 3, 4, 5) ---
-        for i, d in enumerate(raw_distances):
-            is_side_sensor = (i == 0 or i == 3)
-            if is_side_sensor:
-                # БОКОВІ
-                if d <= 2:
-                    discrete_state.append(0)  # Crash / Touch
-                elif d <= 5:
-                    discrete_state.append(1)  # Critical
-                elif d <= 8:
-                    discrete_state.append(2)  # Very Close
-                elif d <= 12:
-                    discrete_state.append(3)  # Close
-                elif d <= 16:
-                    discrete_state.append(4)  # Near
-                else:
-                    discrete_state.append(5)  # Safe
+        # --- Lidar: 6 рівнів (0-5) ---
+        for i in range(len(raw_distances)):
+            if raw_distances[i] <= 1:
+                discrete_state.append(0)
+            elif raw_distances[i] <= 7:
+                discrete_state.append(1)
+            elif raw_distances[i] <= 13:
+                discrete_state.append(2)
+            elif raw_distances[i] <= 19:
+                discrete_state.append(3)
+            elif raw_distances[i] <= 26:
+                discrete_state.append(4)
+            elif raw_distances[i] <= (self.ray_length - 1):
+                discrete_state.append(5)
             else:
-                # ПЕРЕДНІ
-                if d <= 3:
-                    discrete_state.append(0)  # Crash
-                elif d <= 8:
-                    discrete_state.append(1)  # Critical
-                elif d <= 15:
-                    discrete_state.append(2)  # Close
-                elif d <= 22:
-                    discrete_state.append(3)  # Medium
-                elif d <= 30:
-                    discrete_state.append(4)  # Far
-                else:
-                    discrete_state.append(5)  # Safe
+                discrete_state.append(6)
 
         # --- Speed (Visual) ---
         brightness = self._get_visual_speed(observation)
         speed_state = 0
         if brightness < 40:
             speed_state = 0
-        elif brightness < 60:
+        elif brightness < 70:
             speed_state = 1
         else:
             speed_state = 2
         discrete_state.append(speed_state)
 
-        # Повертаємо стан (без steering) і яскравість для HUD
         return tuple(discrete_state), brightness
 
     def choose_action(self, state):
@@ -187,7 +164,9 @@ class QLearningAgent:
             sample_key = next(iter(loaded_q)) if loaded_q else None
 
             if sample_key and len(loaded_q[sample_key]) != self.action_space_size:
-                print(f"УВАГА: Розмір дій у файлі ({len(loaded_q[sample_key])}) не співпадає. Починаємо з нуля.")
+                print(
+                    f"УВАГА: Розмір дій у файлі ({len(loaded_q[sample_key])}) не співпадає з поточним ({self.action_space_size}).")
+                print("Неможливо завантажити цю модель. Починаємо з нуля.")
                 return False
 
             self.q_table = defaultdict(lambda: np.zeros(self.action_space_size), data['q_table'])
@@ -241,7 +220,7 @@ def train_q_learning_opencv(episodes=500,
         manual_reset = False
 
         for step in range(max_steps):
-            # --- ПРОПУСК ПЕРШИХ 40 КРОКІВ ---
+            # --- ПРОПУСК ПЕРШИХ 40 КРОКІВ (Zoom animation) ---
             if step < 40:
                 next_observation, _, terminated, truncated, _ = env.step(
                     np.array(CONTINUOUS_ACTIONS[0], dtype=np.float32))
@@ -264,36 +243,58 @@ def train_q_learning_opencv(episodes=500,
             else:
                 reward += 15
 
-            # Розпаковка стану: 4 лідари + швидкість
-            d1, d2, d3, d4, speed_class = state
+            # Розпаковка стану: 5 лідарів + швидкість
+            # d1=FarL, d2=L, d3=Center, d4=R, d5=FarR
+            d1, d2, d3, d4, d5, speed_class = state
+            next_d1, next_d2, next_d3, next_d4, next_d5, speed_class = next_state
 
-            #speed
-            if action_idx == 1:
-                reward += 0.5
-
-            if d2 >= 5 and d3 >= 5:
-                if speed_class == 0: reward -= 2
-                else: reward += 2
-            elif d2 <= 4 and d3 <= 4:
-                if speed_class >= 2: reward -= 2
+            # Логіка для швидкості
+            if action_idx == 1:  # Газ
+                reward += 2
 
 
+            if speed_class == 0:
+                reward -= 2  # Або стоїмо, або летимо занадто швидко без контролю? (Тут ваша логіка була дивною, але залишаю структуру)
+            elif speed_class == 2:
+                reward -= 4
+            else:
+                reward += 2
 
-            if d1 <= 3 and (action_idx == 4 or action_idx == 6): reward += 2
-            if d4 <= 3 and (action_idx == 3 or action_idx == 5): reward += 2
+            # Логіка стін (Бокові: d1, d5. Передні-бокові: d2, d4)
+            # Якщо зліва (d1, d2) близько стіна -> караємо
+            if d1 <= 2 or d2 <= 2 or d3 <= 2 or d4 <= 2 or d5 <= 2:
+                reward -= 3
+                # Різкий вліво
+                if d1 <= 2 and d2 >= 5 and action_idx == 3:
+                    reward += 5
+                # Різкий вправо
+                elif d5 <= 2 and d4 >= 5 and action_idx == 4:
+                    reward += 5
 
-            # if abs(d1 - d4) >= 2: reward -= 3
+            if d3 < 6:
+                if speed_class == 0: reward += 2
+                else: reward -= 2
+                # Мякий вліво
+                if (d2 >= 5 or d1 >= 5) and action_idx == 3: reward += 5
+                # Мякий вправо
+                elif (d4 >= 5 or d5 >= 5) and action_idx == 4: reward += 5
+                # Різкий вліво
+                elif d1 >= 3 and d2 <= 2 and d3 <= 2 and d4 <= 2 and d5 <= 2 and action_idx == 3: reward += 5
+                # Різкий вправо
+                elif d1 <= 2 and d2 <= 2 and d3 <= 2 and d4 <= 2 and d5 >= 3 and action_idx == 3: reward += 5
+            else:
+                if speed_class == 2: reward -= 5
 
+            #Критична близькість
+            if d1 <= 1 or d2 <= 1 or d3 <= 1 or d4 <= 1 or d5 <= 1:
+                reward -= 1
 
+            # Краш
+            # if d1 == 0 or d2 == 0 or d3 == 0 or d4 == 0 or d5 == 0:
+            #     reward -= 5
 
-            # if d1 <= 1 and d2 <= 2 and d4 <= 2 and d4 >= 3 and action_idx == 8:
-            #     reward += 5
-            # elif d1 >= 3 and d2 <= 2 and d4 <= 2 and d4 <= 1 and action_idx == 7:
-            #     reward += 5
-
-            if d1 <= 1 or d2 <= 1 or d3 <= 1 or d4 <= 1: reward -= 5
-            if d1 == 0 or d2 == 0 or d3 == 0 or d4 == 0: reward -= 20
-            if d1 == 0 and d2 == 0 and d3 == 0 and d4 == 0:
+            # Повний краш (всі сенсори 0)
+            if next_d1 == 0 and next_d2 == 0 and next_d3 == 0 and next_d4 == 0 and next_d5 == 0:
                 reward -= 50
                 agent.update(state, action_idx, reward, next_state, True)
                 break
@@ -311,15 +312,15 @@ def train_q_learning_opencv(episodes=500,
 
             for i, (end_x, end_y) in enumerate(endpoints):
                 dist_class = state[i]
-                if dist_class == 5:
+                if dist_class == 6:
                     color = (0, 255, 0)
-                elif dist_class == 4:
+                elif dist_class == 5:
                     color = (0, 255, 127)
-                elif dist_class == 3:
+                elif dist_class == 4:
                     color = (0, 255, 255)
-                elif dist_class == 2:
+                elif dist_class == 3:
                     color = (0, 128, 255)
-                elif dist_class == 1:
+                elif dist_class == 2:
                     color = (0, 0, 255)
                 else:
                     color = (0, 0, 128)
@@ -343,11 +344,12 @@ def train_q_learning_opencv(episodes=500,
             action_name = ACTION_NAMES[action_idx]
 
             draw_text(f'Episode: {episode}/{episodes}')
+            draw_text(f'Step: {step} / {max_steps}')
             draw_text(f'Action: {action_name} ({action_idx})', (0, 255, 0))
             draw_text(f'Brightness: {brightness_val:.1f} ({speed_labels[speed_class]})', speed_col)
             draw_text(f'Reward: {total_reward:.1f}')
             draw_text(f'Epsilon: {agent.epsilon:.3f}')
-            draw_text(f'State: {d1}, {d2}, {d3}, {d4}')
+            draw_text(f'State: {d1}, {d2}, {d3}, {d4}, {d5}')
 
             roi_x1 = int(agent.speed_roi_x * SCALE_X)
             roi_y1 = int(agent.speed_roi_y * SCALE_Y)
@@ -391,15 +393,15 @@ def train_q_learning_opencv(episodes=500,
 
 
 if __name__ == "__main__":
-    # Нова назва файлу: "no_steer"
-    model_file = "q_learning_car_racing_continuous_no_steer.pkl"
-    save_file = "q_learning_car_racing_continuous_no_steer.pkl"
+    # Нова назва файлу для 5 лідарів + 5 дій
+    model_file = "q_learning_car_racing_continuous_5lidar_5actions.pkl"
+    save_file = "q_learning_car_racing_continuous_5lidar_5actions.pkl"
 
-    print("--- CAR RACING Q-LEARNING (CONTINUOUS + NO STEERING STATE) ---")
+    print("--- CAR RACING Q-LEARNING (5 RAYS + 5 ACTIONS) ---")
     if os.path.exists(model_file):
         print(f"Знайдено {model_file}, продовжуємо...")
-        train_q_learning_opencv(episodes=500, max_steps=1000, load_path=model_file, save_path=save_file,
-                                start_epsilon=0.01)
+        train_q_learning_opencv(episodes=500, max_steps=3000, load_path=model_file, save_path=save_file,
+                                start_epsilon=0.03)
     else:
         print("Починаємо з нуля (нова continuous модель)...")
         train_q_learning_opencv(episodes=500, max_steps=3000, save_path=save_file)
