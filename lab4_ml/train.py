@@ -13,8 +13,8 @@ CONTINUOUS_ACTIONS = {
     0: [0.0, 0.0, 0.0],  # Idle
     1: [0.0, 1.0, 0.0],  # Full Gas (Straight)
     2: [0.0, 0.0, 0.8],  # Brake
-    3: [-0.5, 0.35, 0.0],  # Soft Left + Gas (Drift)
-    4: [0.5, 0.35, 0.0],  # Soft Right + Gas (Drift)
+    3: [-0.5, 0.2, 0.0],  # Soft Left + Gas (Drift)
+    4: [0.5, 0.2, 0.0],  # Soft Right + Gas (Drift)
 }
 
 ACTION_NAMES = {
@@ -295,7 +295,7 @@ def train_q_learning_opencv(episodes=500,
 
             # Повний краш (всі сенсори 0)
             if next_d1 == 0 and next_d2 == 0 and next_d3 == 0 and next_d4 == 0 and next_d5 == 0:
-                reward -= 50
+                reward -= 20
                 agent.update(state, action_idx, reward, next_state, True)
                 break
 
@@ -401,7 +401,7 @@ if __name__ == "__main__":
     if os.path.exists(model_file):
         print(f"Знайдено {model_file}, продовжуємо...")
         train_q_learning_opencv(episodes=500, max_steps=3000, load_path=model_file, save_path=save_file,
-                                start_epsilon=0.03)
+                                start_epsilon=0.02)
     else:
         print("Починаємо з нуля (нова continuous модель)...")
         train_q_learning_opencv(episodes=500, max_steps=3000, save_path=save_file)
