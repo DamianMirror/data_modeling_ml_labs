@@ -13,8 +13,8 @@ CONTINUOUS_ACTIONS = {
     0: [0.0, 0.0, 0.0],  # Idle
     1: [0.0, 1.0, 0.0],  # Full Gas (Straight)
     2: [0.0, 0.0, 0.8],  # Brake
-    3: [-0.5, 0.2, 0.0],  # Soft Left + Gas (Drift)
-    4: [0.5, 0.2, 0.0],  # Soft Right + Gas (Drift)
+    3: [-0.4, 0.1, 0.0],  # Soft Left + Gas (Drift)
+    4: [0.4, 0.1, 0.0],  # Soft Right + Gas (Drift)
 }
 
 ACTION_NAMES = {
@@ -96,7 +96,6 @@ class QLearningAgent:
         raw_distances, _ = self.cast_rays(observation)
         discrete_state = []
 
-        # --- Lidar: 6 рівнів (0-5) ---
         for i in range(len(raw_distances)):
             if raw_distances[i] <= 1:
                 discrete_state.append(0)
@@ -401,7 +400,7 @@ if __name__ == "__main__":
     if os.path.exists(model_file):
         print(f"Знайдено {model_file}, продовжуємо...")
         train_q_learning_opencv(episodes=500, max_steps=3000, load_path=model_file, save_path=save_file,
-                                start_epsilon=0.02)
+                                start_epsilon=0.01)
     else:
         print("Починаємо з нуля (нова continuous модель)...")
         train_q_learning_opencv(episodes=500, max_steps=3000, save_path=save_file)
